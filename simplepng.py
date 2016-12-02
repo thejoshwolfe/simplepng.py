@@ -198,7 +198,7 @@ def read_png(f, verbose=False):
   if width * height == 0:
     raise SimplePngError("image must have > 0 pixels")
   if bit_depth == 16:
-    raise SimplePngError("16-bit color depth is not yet supported")
+    raise SimplePngError("sorry. 16-bit color depth is not supported")
   if color_type not in (0, 2, 3, 4, 6):
     raise SimplePngError("unsupported color type: {}".format(color_type))
   if compression != 0:

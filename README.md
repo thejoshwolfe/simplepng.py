@@ -40,8 +40,9 @@ python3 test/test.py
 
 ## Limitations
 
-In memory, images are always stored in RGBA format with 8 bits per channel (32 bits per pixel).
-This means that reading an image with 16-bit channels will lose information.
+This library cannot read images with 16-bit color channels (48 or 64 bits per pixel).
+This is because in memory, this library stores images in RGBA format with 8 bits per channel (32 bits per pixel).
+Reading 16-bit color channels would require significantly changing this design.
 
 When reading images, only chunk types IHDR, IPLT, IDAT, and IEND are recognized; all others are ignored.
 TODO: Recognize the tRNS ancillary chunk for describing the alpha channel.
