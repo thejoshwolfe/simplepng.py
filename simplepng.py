@@ -193,8 +193,12 @@ def read_png(f, verbose=False):
     raise SimplePngError("expected IHDR")
   width, height, bit_depth, color_type, compression, filter_method, interlaced = struct.unpack(IHDR_fmt, IHDR.body)
   if verbose: print("metadata: {}x{}, {}-bit, color_type: {}".format(width, height, bit_depth, color_type))
+  if width * height == 0:
+    raise SimplePngError("image must have > 0 pixels")
   if bit_depth == 16:
     raise SimplePngError("16-bit color depth is not supported")
+  if color_type not in (0, 2, 3, 4, 6):
+    raise SimplePngError("unsupported color type: {}".format(color_type))
   if compression != 0:
     raise SimplePngError("unsupported compression method: {}".format(compression))
   if filter_method != 0:
@@ -307,15 +311,17 @@ def read_png(f, verbose=False):
     ]
     assert width * height == sum(w * h for w, h, _ in passes)
 
-  filter_type_histogram = collections.Counter()
+  if verbose: filter_type_histogram = collections.Counter()
   in_cursor = 0
   for pass_width, pass_height, coord_transform in passes:
     if pass_width == 0: continue
     for y in range(pass_height):
-      filter_type = idat_data[in_cursor]
+      try: filter_type = idat_data[in_cursor]
+      except IndexError: raise SimplePngError("expected more IDAT data")
       in_cursor += 1
-      filter_type_histogram.update([filter_type])
-      reconstruct = reconstruct_funcs[filter_type]
+      try: reconstruct = reconstruct_funcs[filter_type]
+      except IndexError: raise SimplePngError("unrecognized filter type: {}".format(filter_type))
+      if verbose: filter_type_histogram.update([filter_type])
       for x in range(pass_width):
         # get rbga from bits
         if color_type & color_type_mask_INDEXED:
