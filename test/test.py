@@ -243,6 +243,8 @@ def test_dont_crash():
     with open(input_path, "rb") as f:
       try:
         simplepng.read_png(f)
+      except simplepng.SimplePngError:
+        assert False, input_path + ": wrongly rejected"
       except:
         assert False, input_path + ": crashed"
 

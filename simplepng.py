@@ -229,30 +229,38 @@ def read_png(f, verbose=False):
 
   if bit_depth == 8:
     def bits_at(index):
-      return idat_data[index]
+      try: return idat_data[index]
+      except IndexError: raise SimplePngError("expected more IDAT data")
     def consume_byte(index):
-      return (idat_data[index], index + 1)
+      try: return (idat_data[index], index + 1)
+      except IndexError: raise SimplePngError("expected more IDAT data")
   elif bit_depth == 4:
     def bits_at(index):
-      tmp = idat_data[index >> 1]
+      try: tmp = idat_data[index >> 1]
+      except IndexError: raise SimplePngError("expected more IDAT data")
       shift = (1 - (index & 1)) << 2
       return (tmp >> shift) & 0xf
     def consume_byte(index):
-      return (idat_data[index >> 1], index + 2)
+      try: return (idat_data[index >> 1], index + 2)
+      except IndexError: raise SimplePngError("expected more IDAT data")
   elif bit_depth == 2:
     def bits_at(index):
-      tmp = idat_data[index >> 2]
+      try: tmp = idat_data[index >> 2]
+      except IndexError: raise SimplePngError("expected more IDAT data")
       shift = (3 - (index & 3)) << 1
       return (tmp >> shift) & 0x3
     def consume_byte(index):
-      return (idat_data[index >> 2], index + 4)
+      try: return (idat_data[index >> 2], index + 4)
+      except IndexError: raise SimplePngError("expected more IDAT data")
   elif bit_depth == 1:
     def bits_at(index):
-      tmp = idat_data[index >> 3]
+      try: tmp = idat_data[index >> 3]
+      except IndexError: raise SimplePngError("expected more IDAT data")
       shift = 7 - (index & 7)
       return (tmp >> shift) & 0x1
     def consume_byte(index):
-      return (idat_data[index >> 3], index + 8)
+      try: return (idat_data[index >> 3], index + 8)
+      except IndexError: raise SimplePngError("expected more IDAT data")
   else:
     raise SimplePngError("unsupported bit depth: {}".format(bit_depth))
 
@@ -326,8 +334,7 @@ def read_png(f, verbose=False):
   for pass_width, pass_height, coord_transform in passes:
     if pass_width == 0: continue
     for y in range(pass_height):
-      try: filter_type, in_cursor = consume_byte(in_cursor)
-      except IndexError: raise SimplePngError("expected more IDAT data")
+      filter_type, in_cursor = consume_byte(in_cursor)
       try: reconstruct = reconstruct_funcs[filter_type]
       except IndexError: raise SimplePngError("unrecognized filter type: {}".format(filter_type))
       if verbose: filter_type_histogram.update([filter_type])
