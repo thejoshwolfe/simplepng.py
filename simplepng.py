@@ -192,11 +192,13 @@ def read_png(f, verbose=False):
   if IHDR.type_code != b"IHDR":
     raise SimplePngError("expected IHDR")
   width, height, bit_depth, color_type, compression, filter_method, interlaced = struct.unpack(IHDR_fmt, IHDR.body)
-  if verbose: print("metadata: {}x{}, {}-bit, color_type: {}".format(width, height, bit_depth, color_type))
+  if verbose: print(
+      "metadata: {}x{}, {}-bit, color_type: {}, compression: {}, filter_method: {}, interlaced: {}".format(
+          width, height, bit_depth, color_type, compression, filter_method, interlaced))
   if width * height == 0:
     raise SimplePngError("image must have > 0 pixels")
   if bit_depth == 16:
-    raise SimplePngError("16-bit color depth is not supported")
+    raise SimplePngError("16-bit color depth is not yet supported")
   if color_type not in (0, 2, 3, 4, 6):
     raise SimplePngError("unsupported color type: {}".format(color_type))
   if compression != 0:
@@ -215,7 +217,7 @@ def read_png(f, verbose=False):
       break
     elif chunk.type_code == b"PLTE":
       if not(color_type & color_type_mask_INDEXED):
-        if verbose: print("WARNING: ignoring chunk: {}: color_type does not require a palette".format(repr(chunk.type_code)))
+        if verbose: print("WARNING: ignoring PLTE chunk. color_type {} does not require a palette".format(color_type))
       else:
         palette = [struct.unpack("!I", bytes(rgb + (0xff,)))[0] for rgb in zip(*[iter(chunk.body)]*3)]
     elif chunk.type_code == b"IDAT":
@@ -228,21 +230,29 @@ def read_png(f, verbose=False):
   if bit_depth == 8:
     def bits_at(index):
       return idat_data[index]
+    def consume_byte(index):
+      return (idat_data[index], index + 1)
   elif bit_depth == 4:
     def bits_at(index):
       tmp = idat_data[index >> 1]
       shift = (1 - (index & 1)) << 2
       return (tmp >> shift) & 0xf
+    def consume_byte(index):
+      return (idat_data[index >> 1], index + 2)
   elif bit_depth == 2:
     def bits_at(index):
       tmp = idat_data[index >> 2]
       shift = (3 - (index & 3)) << 1
       return (tmp >> shift) & 0x3
+    def consume_byte(index):
+      return (idat_data[index >> 2], index + 4)
   elif bit_depth == 1:
     def bits_at(index):
       tmp = idat_data[index >> 3]
       shift = 7 - (index & 7)
       return (tmp >> shift) & 0x1
+    def consume_byte(index):
+      return (idat_data[index >> 3], index + 8)
   else:
     raise SimplePngError("unsupported bit depth: {}".format(bit_depth))
 
@@ -316,9 +326,8 @@ def read_png(f, verbose=False):
   for pass_width, pass_height, coord_transform in passes:
     if pass_width == 0: continue
     for y in range(pass_height):
-      try: filter_type = idat_data[in_cursor]
+      try: filter_type, in_cursor = consume_byte(in_cursor)
       except IndexError: raise SimplePngError("expected more IDAT data")
-      in_cursor += 1
       try: reconstruct = reconstruct_funcs[filter_type]
       except IndexError: raise SimplePngError("unrecognized filter type: {}".format(filter_type))
       if verbose: filter_type_histogram.update([filter_type])

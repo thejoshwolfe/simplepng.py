@@ -194,12 +194,13 @@ schaik_error_names = [
   "xc1n0g08.png",
   "xc9n2c08.png",
   "xcrn0g04.png",
-  "xcsn0g01.png",
+  # We don't check the IDAT checksum
+  # "xcsn0g01.png",
   "xd0n2c08.png",
   "xd3n2c08.png",
   "xd9n2c08.png",
   "xdtn0g01.png",
-  # This one wants us to check the crc32. meh.
+  # We don't check the IHDR checksum
   # "xhdn0g08.png",
   "xlfn0g04.png",
   "xs1n0g01.png",
