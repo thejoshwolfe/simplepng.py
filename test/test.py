@@ -2,11 +2,14 @@
 import os
 import sys
 import itertools
+import shutil
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import simplepng
 
-schaik_dir = os.path.join(os.path.dirname(__file__), "deps", "PngSuite-2013jan13")
+test_dir = os.path.dirname(__file__)
+schaik_dir = os.path.join(test_dir, "deps", "PngSuite-2013jan13")
+schaik_expected_dir = os.path.join(test_dir, "schaik_expected")
 schaik_basic_names = [
   "basn0g01.png",
   "basn0g02.png",
@@ -248,6 +251,45 @@ def test_dont_crash():
       except:
         assert False, input_path + ": crashed"
 
+def diff_images(got_image, expected_image):
+  # these should never be wrong
+  assert got_image.width == expected_image.width
+  assert got_image.height == expected_image.height
+  diff_image = simplepng.ImageBuffer(expected_image.width, expected_image.height)
+  good = True
+  for y in range(expected_image.height):
+    for x in range(expected_image.width):
+      if got_image.at(x, y) != expected_image.at(x, y):
+        # just show red
+        diff_image.set(x, y, 0xff0000ff)
+        good = False
+  if good: return None
+  return diff_image
+
+def test_schaik_expectations():
+  expected_path = os.path.join(schaik_expected_dir, "basn.png")
+  with open(expected_path, "rb") as f:
+    expected_image = simplepng.read_png(f)
+  got_image = simplepng.ImageBuffer(expected_image.width, expected_image.height)
+  x = 0
+  for name in schaik_basic_names:
+    input_path = os.path.join(schaik_dir, name)
+    with open(input_path, "rb") as f:
+      subimage = simplepng.read_png(f)
+    got_image.paste(subimage, dx=x)
+    x += subimage.width
+
+  diff_image = diff_images(got_image, expected_image)
+  if diff_image != None:
+    # write out all the information in the CWD
+    shutil.copy(expected_path, "failure-expected.png")
+    with open("failure-got.png", "wb") as f:
+      simplepng.write_png(f, got_image)
+    with open("failure-diff.png", "wb") as f:
+      simplepng.write_png(f, diff_image)
+    assert False, expected_path + ": didn't match. see failure-expected.png, failure-got.png, failure-diff.png"
+
 if __name__ == "__main__":
   test_errors()
   test_dont_crash()
+  test_schaik_expectations()
