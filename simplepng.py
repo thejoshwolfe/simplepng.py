@@ -241,6 +241,7 @@ def read_png(f, verbose=False):
       shift = (1 - (index & 1)) << 2
       return (tmp >> shift) & 0xf
     def consume_byte(index):
+      index = (index + 1) & ~1
       try: return (idat_data[index >> 1], index + 2)
       except IndexError: raise SimplePngError("expected more IDAT data")
   elif bit_depth == 2:
@@ -250,6 +251,7 @@ def read_png(f, verbose=False):
       shift = (3 - (index & 3)) << 1
       return (tmp >> shift) & 0x3
     def consume_byte(index):
+      index = (index + 3) & ~3
       try: return (idat_data[index >> 2], index + 4)
       except IndexError: raise SimplePngError("expected more IDAT data")
   elif bit_depth == 1:
@@ -259,6 +261,7 @@ def read_png(f, verbose=False):
       shift = 7 - (index & 7)
       return (tmp >> shift) & 0x1
     def consume_byte(index):
+      index = (index + 7) & ~7
       try: return (idat_data[index >> 3], index + 8)
       except IndexError: raise SimplePngError("expected more IDAT data")
   else:

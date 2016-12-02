@@ -112,14 +112,14 @@ schaik_gamma_ignore_names = [
   "g25n3p04.png",
 ]
 schaik_chunk_ordering_names = [
-  "oi1n0g16.png",
-  "oi1n2c16.png",
-  "oi2n0g16.png",
-  "oi2n2c16.png",
-  "oi4n0g16.png",
-  "oi4n2c16.png",
-  "oi9n0g16.png",
-  "oi9n2c16.png",
+  # "oi1n0g16.png",
+  # "oi1n2c16.png",
+  # "oi2n0g16.png",
+  # "oi2n2c16.png",
+  # "oi4n0g16.png",
+  # "oi4n2c16.png",
+  # "oi9n0g16.png",
+  # "oi9n2c16.png",
 ]
 schaik_pallet_names = [
   # "pp0n2c16.png",
