@@ -1,6 +1,6 @@
 # this is python 3, not python 2
 
-__all__ = ["read_png", "write_png", "ImageBuffer"]
+__all__ = ["read_png", "write_png", "ImageBuffer", "SimplePngError"]
 
 import struct
 import zlib
@@ -174,23 +174,33 @@ def alpha_blend(foreground, background):
     (out_a <<  0)
   )
 
+class SimplePngError(Exception):
+  pass
+
 def read_png(f, verbose=False):
-  if f.read(len(magic_number)) != magic_number:
-    raise Exception("not a png image")
+  try:
+    first_bytes = f.read(len(magic_number))
+  except UnicodeDecodeError:
+    # trigger the non-bytes error below
+    first_bytes = ""
+  if type(first_bytes) != bytes:
+    raise SimplePngError("file must be open in binary mode")
+  if first_bytes != magic_number:
+    raise SimplePngError("not a png image")
 
   IHDR = read_chunk(f)
   if IHDR.type_code != b"IHDR":
-    raise Exception("expected IHDR")
+    raise SimplePngError("expected IHDR")
   width, height, bit_depth, color_type, compression, filter_method, interlaced = struct.unpack(IHDR_fmt, IHDR.body)
   if verbose: print("metadata: {}x{}, {}-bit, color_type: {}".format(width, height, bit_depth, color_type))
   if bit_depth == 16:
-    raise Exception("16-bit color depth is not supported")
+    raise SimplePngError("16-bit color depth is not supported")
   if compression != 0:
-    raise Exception("unsupported compression method")
+    raise SimplePngError("unsupported compression method: {}".format(compression))
   if filter_method != 0:
-    raise Exception("unsupported filter method")
-  if interlaced != 0:
-    raise Exception("interlaced is not supported")
+    raise SimplePngError("unsupported filter method: {}".format(filter_method))
+  if interlaced not in (0, 1):
+    raise SimplePngError("unsupported interlace method: {}".format(interlaced))
 
   idat_data = []
   decompressor = zlib.decompressobj()
@@ -229,27 +239,27 @@ def read_png(f, verbose=False):
       tmp = idat_data[index >> 3]
       shift = 7 - (index & 7)
       return (tmp >> shift) & 0x1
+  else:
+    raise SimplePngError("unsupported bit depth: {}".format(bit_depth))
 
   image = ImageBuffer(width, height)
   data = image.data
-  in_cursor = 0
-  out_cursor = 0
 
-  def reconstruct_none(v):
+  def reconstruct_none(v, coord_transform, x, y):
     return v
-  def reconstruct_sub(v):
+  def reconstruct_sub(v, coord_transform, x, y):
     if x == 0: return v
-    else:      return add_bytes(data[out_cursor - 1], v)
-  def reconstruct_up(v):
+    else:      return add_bytes(data[coord_transform(x - 1, y)], v)
+  def reconstruct_up(v, coord_transform, x, y):
     if y == 0: return v
-    else:      return add_bytes(data[out_cursor - width], v)
-  def reconstruct_average(v):
+    else:      return add_bytes(data[coord_transform(x, y - 1)], v)
+  def reconstruct_average(v, coord_transform, x, y):
     if x == 0: sub = 0
-    else:      sub = data[out_cursor - 1]
+    else:      sub = data[coord_transform(x - 1, y)]
     if y == 0: up = 0
-    else:      up = data[out_cursor - width]
+    else:      up = data[coord_transform(x, y - 1)]
     return add_bytes(average_bytes(sub, up), v)
-  def reconstruct_paeth(v):
+  def reconstruct_paeth(v, coord_transform, x, y):
     def get_predictor(a, b, c):
       p = a + b - c
       pa = abs(p - a)
@@ -261,11 +271,11 @@ def read_png(f, verbose=False):
     def paeth_byte(v, shift):
       v = (v >> shift) & 0xff
       if x == 0: sub = 0
-      else:      sub = (data[out_cursor - 1] >> shift) & 0xff
+      else:      sub = (data[coord_transform(x - 1, y)] >> shift) & 0xff
       if y == 0: up = 0
-      else:      up = (data[out_cursor - width] >> shift) & 0xff
+      else:      up = (data[coord_transform(x, y - 1)] >> shift) & 0xff
       if x*y==0: diag = 0
-      else:      diag = (data[out_cursor - width - 1] >> shift) & 0xff
+      else:      diag = (data[coord_transform(x - 1, y - 1)] >> shift) & 0xff
       return ((get_predictor(sub, up, diag) + v) & 0xff) << shift
     return (
       paeth_byte(v, 24) |
@@ -281,49 +291,67 @@ def read_png(f, verbose=False):
     reconstruct_paeth,   # 4
   ]
 
+  if interlaced == 0:
+    # no interlacing
+    passes = [(width, height, lambda x, y: y * width + x)]
+  else:
+    # Adam7 interlacing
+    passes = [
+      ((width + 7) // 8, (height + 7) // 8, lambda x, y: (y * 8    ) * width + x * 8    ),
+      ((width + 3) // 8, (height + 7) // 8, lambda x, y: (y * 8    ) * width + x * 8 + 4),
+      ((width + 3) // 4, (height + 3) // 8, lambda x, y: (y * 8 + 4) * width + x * 4    ),
+      ((width + 1) // 4, (height + 3) // 4, lambda x, y: (y * 4    ) * width + x * 4 + 2),
+      ((width + 1) // 2, (height + 1) // 4, lambda x, y: (y * 4 + 2) * width + x * 2    ),
+      ( width      // 2, (height + 1) // 2, lambda x, y: (y * 2    ) * width + x * 2 + 1),
+      ( width          ,  height      // 2, lambda x, y: (y * 2 + 1) * width + x        ),
+    ]
+    assert width * height == sum(w * h for w, h, _ in passes)
+
   filter_type_histogram = collections.Counter()
-  for y in range(height):
-    filter_type = idat_data[in_cursor]
-    in_cursor += 1
-    filter_type_histogram.update([filter_type])
-    reconstruct = reconstruct_funcs[filter_type]
-    for x in range(width):
-      # get rbga from bits
-      if color_type & color_type_mask_INDEXED:
-        # palette
-        value = palette[bits_at(in_cursor)]
-        in_cursor += 1
-        if filter_type != 0:
-          if verbose: print("WARNING: ignoring filter_type: {}: color_type is indexed".format(filter_type))
-      else:
-        if color_type & color_type_mask_COLOR:
-          # rgb
-          r = bits_at(in_cursor+0)
-          g = bits_at(in_cursor+1)
-          b = bits_at(in_cursor+2)
-          in_cursor += 3
-        else:
-          # grayscale
-          r = g = b = bits_at(in_cursor)
+  in_cursor = 0
+  for pass_width, pass_height, coord_transform in passes:
+    if pass_width == 0: continue
+    for y in range(pass_height):
+      filter_type = idat_data[in_cursor]
+      in_cursor += 1
+      filter_type_histogram.update([filter_type])
+      reconstruct = reconstruct_funcs[filter_type]
+      for x in range(pass_width):
+        # get rbga from bits
+        if color_type & color_type_mask_INDEXED:
+          # palette
+          value = palette[bits_at(in_cursor)]
           in_cursor += 1
-        if color_type & color_type_mask_ALPHA:
-          a = bits_at(in_cursor)
-          in_cursor += 1
+          if filter_type != 0:
+            if verbose: print("WARNING: ignoring filter_type: {}: color_type is indexed".format(filter_type))
         else:
-          # opaque
-          a = 255
-        value = (
-          (r << 24) |
-          (g << 16) |
-          (b << 8) |
-          (a << 0)
-        )
-        value = reconstruct(value)
-      if not (color_type & color_type_mask_ALPHA):
-        # alpha is always opaque
-        value |= 0xff
-      data[out_cursor] = value
-      out_cursor += 1
+          if color_type & color_type_mask_COLOR:
+            # rgb
+            r = bits_at(in_cursor+0)
+            g = bits_at(in_cursor+1)
+            b = bits_at(in_cursor+2)
+            in_cursor += 3
+          else:
+            # grayscale
+            r = g = b = bits_at(in_cursor)
+            in_cursor += 1
+          if color_type & color_type_mask_ALPHA:
+            a = bits_at(in_cursor)
+            in_cursor += 1
+          else:
+            # opaque
+            a = 255
+          value = (
+            (r << 24) |
+            (g << 16) |
+            (b << 8) |
+            (a << 0)
+          )
+          value = reconstruct(value, coord_transform, x, y)
+        if not (color_type & color_type_mask_ALPHA):
+          # alpha is always opaque
+          value |= 0xff
+        data[coord_transform(x, y)] = value
   if verbose: print("filter types used: " + "   ".join("{}:{}".format(*x) for x in sorted(filter_type_histogram.items())))
 
   return image
