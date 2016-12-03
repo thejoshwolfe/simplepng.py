@@ -44,6 +44,19 @@ schaik_interlaced_names = [
   "basi6a08.png",
   # "basi6a16.png",
 ]
+schaik_filter_type_names = [
+  "f00n0g08.png",
+  "f00n2c08.png",
+  "f01n0g08.png",
+  "f01n2c08.png",
+  "f02n0g08.png",
+  "f02n2c08.png",
+  "f03n0g08.png",
+  "f03n2c08.png",
+  "f04n0g08.png",
+  "f04n2c08.png",
+  "f99n0g04.png",
+]
 schaik_background_names = [
   "bgai4a08.png",
   # "bgai4a16.png",
@@ -80,19 +93,6 @@ schaik_ancillary_ignore_names = [
   "cthn0g04.png",
   "ctjn0g04.png",
   "ctzn0g04.png",
-]
-schaik_filter_type_names = [
-  "f00n0g08.png",
-  "f00n2c08.png",
-  "f01n0g08.png",
-  "f01n2c08.png",
-  "f02n0g08.png",
-  "f02n2c08.png",
-  "f03n0g08.png",
-  "f03n2c08.png",
-  "f04n0g08.png",
-  "f04n2c08.png",
-  "f99n0g04.png",
 ]
 schaik_gamma_ignore_names = [
   # "g03n0g16.png",
@@ -231,9 +231,9 @@ def test_dont_crash():
   groups = [
     schaik_basic_names,
     schaik_interlaced_names,
+    schaik_filter_type_names,
     schaik_background_names,
     schaik_ancillary_ignore_names,
-    schaik_filter_type_names,
     schaik_gamma_ignore_names,
     schaik_chunk_ordering_names,
     schaik_pallet_names,
@@ -267,12 +267,17 @@ def diff_images(got_image, expected_image):
   return diff_image
 
 def test_schaik_expectations():
-  expected_path = os.path.join(schaik_expected_dir, "basn.png")
+  test_schaik_expectation(schaik_basic_names, "bas.png")
+  test_schaik_expectation(schaik_interlaced_names, "bas.png")
+  test_schaik_expectation(schaik_filter_type_names, "f.png")
+
+def test_schaik_expectation(names, expected_name):
+  expected_path = os.path.join(schaik_expected_dir, expected_name)
   with open(expected_path, "rb") as f:
     expected_image = simplepng.read_png(f)
   got_image = simplepng.ImageBuffer(expected_image.width, expected_image.height)
   x = 0
-  for name in schaik_basic_names:
+  for name in names:
     input_path = os.path.join(schaik_dir, name)
     with open(input_path, "rb") as f:
       subimage = simplepng.read_png(f)
