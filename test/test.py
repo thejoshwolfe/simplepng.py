@@ -288,6 +288,10 @@ def test_schaik_expectations():
     with open("failure-diff.png", "wb") as f:
       simplepng.write_png(f, diff_image)
     assert False, expected_path + ": didn't match. see failure-expected.png, failure-got.png, failure-diff.png"
+  else:
+    for name in ("failure-expected.png", "failure-got.png", "failure-diff.png"):
+      try: os.remove(name)
+      except OSError: pass
 
 if __name__ == "__main__":
   test_errors()

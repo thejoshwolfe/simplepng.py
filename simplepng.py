@@ -234,6 +234,7 @@ def read_png(f, verbose=False):
     def consume_byte(index):
       try: return (idat_data[index], index + 1)
       except IndexError: raise SimplePngError("expected more IDAT data")
+    opaque = 0xff
   elif bit_depth == 4:
     def bits_at(index):
       try: tmp = idat_data[index >> 1]
@@ -244,6 +245,7 @@ def read_png(f, verbose=False):
       index = (index + 1) & ~1
       try: return (idat_data[index >> 1], index + 2)
       except IndexError: raise SimplePngError("expected more IDAT data")
+    opaque = 0xf
   elif bit_depth == 2:
     def bits_at(index):
       try: tmp = idat_data[index >> 2]
@@ -254,6 +256,7 @@ def read_png(f, verbose=False):
       index = (index + 3) & ~3
       try: return (idat_data[index >> 2], index + 4)
       except IndexError: raise SimplePngError("expected more IDAT data")
+    opaque = 0x3
   elif bit_depth == 1:
     def bits_at(index):
       try: tmp = idat_data[index >> 3]
@@ -264,6 +267,7 @@ def read_png(f, verbose=False):
       index = (index + 7) & ~7
       try: return (idat_data[index >> 3], index + 8)
       except IndexError: raise SimplePngError("expected more IDAT data")
+    opaque = 0x1
   else:
     raise SimplePngError("unsupported bit depth: {}".format(bit_depth))
 
@@ -364,8 +368,7 @@ def read_png(f, verbose=False):
             a = bits_at(in_cursor)
             in_cursor += 1
           else:
-            # opaque
-            a = 255
+            a = opaque
           value = (
             (r << 24) |
             (g << 16) |
@@ -373,11 +376,25 @@ def read_png(f, verbose=False):
             (a << 0)
           )
           value = reconstruct(value, coord_transform, x, y)
+        # TODO: isn't this redundant?
         if not (color_type & color_type_mask_ALPHA):
           # alpha is always opaque
-          value |= 0xff
+          value |= opaque
         data[coord_transform(x, y)] = value
   if verbose: print("filter types used: " + "   ".join("{}:{}".format(*x) for x in sorted(filter_type_histogram.items())))
+
+  # now that we've done all the filtering, we can scale the < 8 bit channels up to 8 bit channels
+  if not (color_type & color_type_mask_INDEXED) and bit_depth != 8:
+    if bit_depth == 4:
+      bit_scaler = 0x11
+    elif bit_depth == 2:
+      bit_scaler = 0x55
+    elif bit_depth == 1:
+      bit_scaler = 0xff
+    else:
+      assert False
+    for i in range(len(data)):
+      data[i] *= bit_scaler
 
   return image
 
