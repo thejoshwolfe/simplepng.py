@@ -133,17 +133,17 @@ class ImageBuffer:
 
 def add_bytes(a, b):
   return (
-    ((a & 0xff000000) + (b & 0xff000000) & 0xff000000) |
-    ((a & 0x00ff0000) + (b & 0x00ff0000) & 0x00ff0000) |
-    ((a & 0x0000ff00) + (b & 0x0000ff00) & 0x0000ff00) |
-    ((a & 0x000000ff) + (b & 0x000000ff) & 0x000000ff)
+    (((a & 0xff000000) + (b & 0xff000000)) & 0xff000000) |
+    (((a & 0x00ff0000) + (b & 0x00ff0000)) & 0x00ff0000) |
+    (((a & 0x0000ff00) + (b & 0x0000ff00)) & 0x0000ff00) |
+    (((a & 0x000000ff) + (b & 0x000000ff)) & 0x000000ff)
   )
 def subtract_bytes(a, b):
   return (
-    ((a & 0xff000000) - (b & 0xff000000) & 0xff000000) |
-    ((a & 0x00ff0000) - (b & 0x00ff0000) & 0x00ff0000) |
-    ((a & 0x0000ff00) - (b & 0x0000ff00) & 0x0000ff00) |
-    ((a & 0x000000ff) - (b & 0x000000ff) & 0x000000ff)
+    (((a & 0xff000000) - (b & 0xff000000)) & 0xff000000) |
+    (((a & 0x00ff0000) - (b & 0x00ff0000)) & 0x00ff0000) |
+    (((a & 0x0000ff00) - (b & 0x0000ff00)) & 0x0000ff00) |
+    (((a & 0x000000ff) - (b & 0x000000ff)) & 0x000000ff)
   )
 def average_bytes(a, b):
   return (
@@ -368,7 +368,7 @@ def read_png(f, verbose=False):
             a = bits_at(in_cursor)
             in_cursor += 1
           else:
-            a = opaque
+            a = 0
           value = (
             (r << 24) |
             (g << 16) |
@@ -399,16 +399,18 @@ def read_png(f, verbose=False):
   return image
 
 if __name__ == "__main__":
-  print("reading 1...")
+  print("reading base...")
   with open(sys.argv[1], "rb") as f:
     image1 = read_png(f, verbose=True)
-  print("reading 2...")
-  with open(sys.argv[2], "rb") as f:
-    image2 = read_png(f, verbose=True)
-  print("compositing...")
-  image1.paste(image2, 0, 0, 0, 0)
-  print("writing...")
-  with open(sys.argv[3], "wb") as f:
-    write_png(f, image1)
+  for arg in sys.argv[2:-1]:
+    print("reading {}...".format(arg))
+    with open(arg, "rb") as f:
+      image2 = read_png(f, verbose=True)
+    print("compositing...")
+    image1.paste(image2, 0, 0, 0, 0)
+  if len(sys.argv) >= 3:
+    print("writing...")
+    with open(sys.argv[-1], "wb") as f:
+      write_png(f, image1)
   print("done")
 
