@@ -270,6 +270,7 @@ def test_schaik_expectations():
   test_schaik_expectation(schaik_basic_names, "bas.png")
   test_schaik_expectation(schaik_interlaced_names, "bas.png")
   test_schaik_expectation(schaik_filter_type_names, "f.png")
+  test_schaik_expectation(schaik_odd_size_names, "s.png")
 
 def test_schaik_expectation(names, expected_name):
   expected_path = os.path.join(schaik_expected_dir, expected_name)
