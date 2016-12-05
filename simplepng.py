@@ -418,20 +418,20 @@ def read_png(f, verbose=False):
           for i in range(filter_left_delta, scanline_content_length):
             idat_data[in_cursor + i] = (
               idat_data[in_cursor + i] +
-              idat_data[in_cursor + i - filter_left_delta] >> 1
+              (idat_data[in_cursor + i - filter_left_delta] >> 1)
             ) & 0xff
         else:
           for i in range(0, filter_left_delta):
-            idat_data[in_cursor] = (
+            idat_data[in_cursor + i] = (
               idat_data[in_cursor + i] +
-              idat_data[in_cursor - scanline_length + i] >> 1
+              (idat_data[in_cursor - scanline_length + i] >> 1)
             ) & 0xff
           for i in range(filter_left_delta, scanline_content_length):
             idat_data[in_cursor + i] = (
-              idat_data[in_cursor + i] + (
+              idat_data[in_cursor + i] + ((
                 idat_data[in_cursor + i - filter_left_delta] +
                 idat_data[in_cursor - scanline_length + i]
-              ) >> 1
+              ) >> 1)
             ) & 0xff
       elif filter_type == 4: # paeth
         if y == 0:
