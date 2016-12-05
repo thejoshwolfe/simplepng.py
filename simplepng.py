@@ -131,26 +131,12 @@ class ImageBuffer:
           self.set(x2, y2, self.at(y, x2))
           self.set(y, x2, tmp)
 
-def add_bytes(a, b):
-  return (
-    (((a & 0xff000000) + (b & 0xff000000)) & 0xff000000) |
-    (((a & 0x00ff0000) + (b & 0x00ff0000)) & 0x00ff0000) |
-    (((a & 0x0000ff00) + (b & 0x0000ff00)) & 0x0000ff00) |
-    (((a & 0x000000ff) + (b & 0x000000ff)) & 0x000000ff)
-  )
 def subtract_bytes(a, b):
   return (
     (((a & 0xff000000) - (b & 0xff000000)) & 0xff000000) |
     (((a & 0x00ff0000) - (b & 0x00ff0000)) & 0x00ff0000) |
     (((a & 0x0000ff00) - (b & 0x0000ff00)) & 0x0000ff00) |
     (((a & 0x000000ff) - (b & 0x000000ff)) & 0x000000ff)
-  )
-def average_bytes(a, b):
-  return (
-    ((((a & 0xff000000) + (b & 0xff000000)) >> 1) & 0xff000000) |
-    ((((a & 0x00ff0000) + (b & 0x00ff0000)) >> 1) & 0x00ff0000) |
-    ((((a & 0x0000ff00) + (b & 0x0000ff00)) >> 1) & 0x0000ff00) |
-    ((((a & 0x000000ff) + (b & 0x000000ff)) >> 1) & 0x000000ff)
   )
 def alpha_blend(foreground, background):
   back_a = background & 0xff
@@ -208,7 +194,7 @@ def read_png(f, verbose=False):
   if interlaced not in (0, 1):
     raise SimplePngError("unsupported interlace method: {}".format(interlaced))
 
-  idat_data = []
+  idat_accumulator = []
   decompressor = zlib.decompressobj()
   palette = None
   while True:
@@ -221,11 +207,12 @@ def read_png(f, verbose=False):
       else:
         palette = [struct.unpack("!I", bytes(rgb + (0xff,)))[0] for rgb in zip(*[iter(chunk.body)]*3)]
     elif chunk.type_code == b"IDAT":
-      idat_data.append(decompressor.decompress(chunk.body))
+      idat_accumulator.append(decompressor.decompress(chunk.body))
     else:
       if verbose: print("WARNING: ignoring chunk: " + repr(chunk.type_code))
-  idat_data.append(decompressor.flush())
-  idat_data = b"".join(idat_data)
+  idat_accumulator.append(decompressor.flush())
+  idat_data = list(b"".join(idat_accumulator))
+  print(repr(bytes(idat_data)))
 
   if bit_depth == 8:
     def bits_at(index):
@@ -274,52 +261,6 @@ def read_png(f, verbose=False):
   image = ImageBuffer(width, height)
   data = image.data
 
-  def reconstruct_none(v, coord_transform, x, y):
-    return v
-  def reconstruct_sub(v, coord_transform, x, y):
-    if x == 0: return v
-    else:      return add_bytes(data[coord_transform(x - 1, y)], v)
-  def reconstruct_up(v, coord_transform, x, y):
-    if y == 0: return v
-    else:      return add_bytes(data[coord_transform(x, y - 1)], v)
-  def reconstruct_average(v, coord_transform, x, y):
-    if x == 0: sub = 0
-    else:      sub = data[coord_transform(x - 1, y)]
-    if y == 0: up = 0
-    else:      up = data[coord_transform(x, y - 1)]
-    return add_bytes(average_bytes(sub, up), v)
-  def reconstruct_paeth(v, coord_transform, x, y):
-    def get_predictor(a, b, c):
-      p = a + b - c
-      pa = abs(p - a)
-      pb = abs(p - b)
-      pc = abs(p - c)
-      if pa <= pb and pa <= pc: return a
-      if pb <= pc: return b
-      return c
-    def paeth_byte(v, shift):
-      v = (v >> shift) & 0xff
-      if x == 0: sub = 0
-      else:      sub = (data[coord_transform(x - 1, y)] >> shift) & 0xff
-      if y == 0: up = 0
-      else:      up = (data[coord_transform(x, y - 1)] >> shift) & 0xff
-      if x*y==0: diag = 0
-      else:      diag = (data[coord_transform(x - 1, y - 1)] >> shift) & 0xff
-      return ((get_predictor(sub, up, diag) + v) & 0xff) << shift
-    return (
-      paeth_byte(v, 24) |
-      paeth_byte(v, 16) |
-      paeth_byte(v,  8) |
-      paeth_byte(v,  0)
-    )
-  reconstruct_funcs = [
-    reconstruct_none,    # 0
-    reconstruct_sub,     # 1
-    reconstruct_up,      # 2
-    reconstruct_average, # 3
-    reconstruct_paeth,   # 4
-  ]
-
   if interlaced == 0:
     # no interlacing
     passes = [(width, height, lambda x, y: y * width + x)]
@@ -340,19 +281,104 @@ def read_png(f, verbose=False):
   in_cursor = 0
   for pass_width, pass_height, coord_transform in passes:
     if pass_width == 0: continue
+
+    # the filter reconstruct function operates on bytes, not pixels
+    if color_type == 0:
+      bytes_per_scanline = (pass_width * bit_depth) >> 3
+    elif color_type == color_type_mask_COLOR:
+      bytes_per_scanline = (pass_width * bit_depth * 3) >> 3
+    elif color_type == (color_type_mask_INDEXED | color_type_mask_COLOR):
+      bytes_per_scanline = pass_width
+    elif color_type == color_type_mask_ALPHA:
+      bytes_per_scanline = (pass_width * bit_depth * 2) >> 3
+    elif color_type == (color_type_mask_COLOR | color_type_mask_ALPHA):
+      bytes_per_scanline = (pass_width * bit_depth * 4) >> 3
+    else:
+      assert False
+
     for y in range(pass_height):
       filter_type, in_cursor = consume_byte(in_cursor)
-      try: reconstruct = reconstruct_funcs[filter_type]
-      except IndexError: raise SimplePngError("unrecognized filter type: {}".format(filter_type))
+      print(filter_type)
+      scanline_offset = in_cursor // bit_depth
+      # don't forget to skip the filter_type byte
+      scanline_offset_up = scanline_offset - bytes_per_scanline - 1
+
+      # apply filter to the scanline
+      if filter_type == 0: # none
+        pass
+      elif filter_type == 1: # sub
+        for i in range(1, bytes_per_scanline):
+          idat_data[scanline_offset + i] = (
+            idat_data[scanline_offset + i] +
+            idat_data[scanline_offset + i - 1]
+          ) & 0xff
+      elif filter_type == 2: # up
+        if y == 0:
+          pass
+        else:
+          for i in range(0, bytes_per_scanline):
+            idat_data[scanline_offset + i] = (
+              idat_data[scanline_offset + i] +
+              idat_data[scanline_offset_up + i]
+            ) & 0xff
+      elif filter_type == 3: # average
+        if y == 0:
+          for i in range(1, bytes_per_scanline):
+            idat_data[scanline_offset + i] = (
+              idat_data[scanline_offset + i] +
+              idat_data[scanline_offset + i - 1] >> 1
+            ) & 0xff
+        else:
+          idat_data[scanline_offset] = (
+            idat_data[scanline_offset] +
+            idat_data[scanline_offset_up] >> 1
+          ) & 0xff
+          for i in range(1, bytes_per_scanline):
+            idat_data[scanline_offset + i] = (
+              idat_data[scanline_offset + i] + (
+                idat_data[scanline_offset + i - 1] +
+                idat_data[scanline_offset_up + i]
+              ) >> 1
+            ) & 0xff
+      elif filter_type == 4: # paeth
+        if y == 0:
+          for i in range(1, bytes_per_scanline):
+            idat_data[scanline_offset + i] = (
+              idat_data[scanline_offset + i] +
+              get_paeth_predictor(
+                idat_data[scanline_offset + i - 1],
+                0,
+                0,
+              )
+            ) & 0xff
+        else:
+          idat_data[scanline_offset] = (
+            idat_data[scanline_offset] +
+            get_paeth_predictor(
+              0,
+              idat_data[scanline_offset_up + i],
+              0,
+            )
+          ) & 0xff
+          for i in range(1, bytes_per_scanline):
+            idat_data[scanline_offset + i] = (
+              idat_data[scanline_offset + i] +
+              get_paeth_predictor(
+                idat_data[scanline_offset + i - 1],
+                idat_data[scanline_offset_up + i],
+                idat_data[scanline_offset_up + i - 1],
+              )
+            ) & 0xff
+      else:
+        raise SimplePngError("unrecognized filter type: {}".format(filter_type))
       if verbose: filter_type_histogram.update([filter_type])
+
       for x in range(pass_width):
         # get rbga from bits
         if color_type & color_type_mask_INDEXED:
           # palette
           value = palette[bits_at(in_cursor)]
           in_cursor += 1
-          if filter_type != 0:
-            if verbose: print("WARNING: ignoring filter_type: {}: color_type is indexed".format(filter_type))
         else:
           if color_type & color_type_mask_COLOR:
             # rgb
@@ -368,18 +394,13 @@ def read_png(f, verbose=False):
             a = bits_at(in_cursor)
             in_cursor += 1
           else:
-            a = 0
+            a = opaque
           value = (
             (r << 24) |
             (g << 16) |
             (b << 8) |
             (a << 0)
           )
-          value = reconstruct(value, coord_transform, x, y)
-        # TODO: isn't this redundant?
-        if not (color_type & color_type_mask_ALPHA):
-          # alpha is always opaque
-          value |= opaque
         data[coord_transform(x, y)] = value
   if verbose: print("filter types used: " + "   ".join("{}:{}".format(*x) for x in sorted(filter_type_histogram.items())))
 
@@ -397,6 +418,15 @@ def read_png(f, verbose=False):
       data[i] *= bit_scaler
 
   return image
+
+def get_paeth_predictor(a, b, c):
+  p = a + b - c
+  pa = abs(p - a)
+  pb = abs(p - b)
+  pc = abs(p - c)
+  if pa <= pb and pa <= pc: return a
+  if pb <= pc: return b
+  return c
 
 if __name__ == "__main__":
   print("reading base...")
