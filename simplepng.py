@@ -63,10 +63,15 @@ class Chunk:
     block = self.type_code + self.body
     f.write(I4(len(self.body)) + block + I4(zlib.crc32(block)))
 def read_chunk(f):
-  [length] = struct.unpack("!I", f.read(4))
-  type_code = f.read(4)
-  body = f.read(length)
-  crc32 = struct.unpack("!I", f.read(4))
+  try:
+    [length] = struct.unpack("!I", f.read(4))
+    type_code = f.read(4)
+    body = f.read(length)
+    if len(body) < length:
+      raise SimplePngError("unexpected EOF")
+    crc32 = struct.unpack("!I", f.read(4))
+  except struct.error:
+    raise SimplePngError("unexpected EOF")
   return Chunk(type_code, body)
 
 class ImageBuffer:
@@ -176,248 +181,326 @@ def read_png(f, verbose=False):
 
   IHDR = read_chunk(f)
   if IHDR.type_code != b"IHDR":
-    raise SimplePngError("expected IHDR")
-  width, height, bit_depth, color_type, compression, filter_method, interlaced = struct.unpack(IHDR_fmt, IHDR.body)
+    raise SimplePngError("expected first chunk to be IHDR")
+  try:
+    width, height, bit_depth, color_type, compression, filter_method, interlaced = struct.unpack(IHDR_fmt, IHDR.body)
+  except struct.error:
+    raise SimplePngError("malformed IHDR")
   if verbose: print(
-      "metadata: {}x{}, {}-bit, color_type: {}, compression: {}, filter_method: {}, interlaced: {}".format(
-          width, height, bit_depth, color_type, compression, filter_method, interlaced))
+      "metadata: {}x{}, color_type: {}, {}-bit, compression: {}, filter_method: {}, interlaced: {}".format(
+          width, height, color_type, bit_depth, compression, filter_method, interlaced))
   if width * height == 0:
     raise SimplePngError("image must have > 0 pixels")
-  if bit_depth == 16:
-    raise SimplePngError("sorry. 16-bit color depth is not supported")
-  if color_type not in (0, 2, 3, 4, 6):
-    raise SimplePngError("unsupported color type: {}".format(color_type))
   if compression != 0:
     raise SimplePngError("unsupported compression method: {}".format(compression))
   if filter_method != 0:
     raise SimplePngError("unsupported filter method: {}".format(filter_method))
-  if interlaced not in (0, 1):
+
+  if (color_type, bit_depth) == (0, 1):
+    bits_per_pixel = 1
+    filter_left_delta = 1
+    def read_color(idat_data, scanline_start, bit_index):
+      return (
+        0xffffff00 * (
+          (idat_data[scanline_start + bit_index // 8] >> (7 - (bit_index & 7))) & 0x1
+        )
+      ) | 0xff
+  elif (color_type, bit_depth) == (0, 2):
+    bits_per_pixel = 2
+    filter_left_delta = 1
+    def read_color(idat_data, scanline_start, bit_index):
+      return (
+        0x55555500 * (
+          (idat_data[scanline_start + bit_index // 8] >> (6 - (bit_index & 6))) & 0x3
+        )
+      ) | 0xff
+  elif (color_type, bit_depth) == (0, 4):
+    bits_per_pixel = 4
+    filter_left_delta = 1
+    def read_color(idat_data, scanline_start, bit_index):
+      return (
+        0x11111100 * (
+          (idat_data[scanline_start + bit_index // 8] >> (4 - (bit_index & 4))) & 0xf
+        )
+      ) | 0xff
+  elif (color_type, bit_depth) == (0, 8):
+    bits_per_pixel = 8
+    filter_left_delta = 1
+    def read_color(idat_data, scanline_start, bit_index):
+      return (
+        0x01010100 * idat_data[scanline_start + bit_index // 8]
+      ) | 0xff
+  elif (color_type, bit_depth) == (0, 16):
+    bits_per_pixel = 16
+    filter_left_delta = 2
+    def read_color(idat_data, scanline_start, bit_index):
+      return (
+        0x01010100 * idat_data[scanline_start + bit_index // 8]
+      ) | 0xff
+  elif (color_type, bit_depth) == (2, 8):
+    bits_per_pixel = 24
+    filter_left_delta = 3
+    def read_color(idat_data, scanline_start, bit_index):
+      return (
+        idat_data[scanline_start + bit_index // 8] << 24
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 1] << 16
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 2] << 8
+      ) | 0xff
+  elif (color_type, bit_depth) == (2, 16):
+    bits_per_pixel = 48
+    filter_left_delta = 6
+    def read_color(idat_data, scanline_start, bit_index):
+      return (
+        idat_data[scanline_start + bit_index // 8] << 24
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 2] << 16
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 4] << 8
+      ) | 0xff
+  elif (color_type, bit_depth) == (3, 1):
+    bits_per_pixel = 1
+    filter_left_delta = 1
+    def read_color(idat_data, scanline_start, bit_index):
+      return (idat_data[scanline_start + bit_index // 8] >> (7 - (bit_index & 7))) & 0x1
+  elif (color_type, bit_depth) == (3, 2):
+    bits_per_pixel = 2
+    filter_left_delta = 1
+    def read_color(idat_data, scanline_start, bit_index):
+      return (idat_data[scanline_start + bit_index // 8] >> (6 - (bit_index & 6))) & 0x3
+  elif (color_type, bit_depth) == (3, 4):
+    bits_per_pixel = 4
+    filter_left_delta = 1
+    def read_color(idat_data, scanline_start, bit_index):
+      return (idat_data[scanline_start + bit_index // 8] >> (4 - (bit_index & 4))) & 0xf
+  elif (color_type, bit_depth) == (3, 8):
+    bits_per_pixel = 8
+    filter_left_delta = 1
+    def read_color(idat_data, scanline_start, bit_index):
+      return idat_data[scanline_start + bit_index // 8]
+  elif (color_type, bit_depth) == (4, 8):
+    bits_per_pixel = 16
+    filter_left_delta = 2
+    def read_color(idat_data, scanline_start, bit_index):
+      return (
+        0x01010100 * idat_data[scanline_start + bit_index // 8]
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 1]
+      )
+  elif (color_type, bit_depth) == (4, 16):
+    bits_per_pixel = 32
+    filter_left_delta = 4
+    def read_color(idat_data, scanline_start, bit_index):
+      return (
+        0x01010100 * idat_data[scanline_start + bit_index // 8]
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 2]
+      )
+  elif (color_type, bit_depth) == (6, 8):
+    bits_per_pixel = 32
+    filter_left_delta = 4
+    def read_color(idat_data, scanline_start, bit_index):
+      return (
+        idat_data[scanline_start + bit_index // 8] << 24
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 1] << 16
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 2] << 8
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 3]
+      )
+  elif (color_type, bit_depth) == (6, 16):
+    bits_per_pixel = 64
+    filter_left_delta = 8
+    def read_color(idat_data, scanline_start, bit_index):
+      return (
+        idat_data[scanline_start + bit_index // 8] << 24
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 2] << 16
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 4] << 8
+      ) | (
+        idat_data[scanline_start + bit_index // 8 + 6]
+      )
+  else:
+    raise SimplePngError("unsupported color type/bit depth combination: {}/{}".format(color_type, bit_depth))
+
+  if interlaced == 0:
+    interlacing = no_interlacing
+  elif interlaced == 1:
+    interlacing = adam7_interlacing
+  else:
     raise SimplePngError("unsupported interlace method: {}".format(interlaced))
 
+  pixel_sizes = [(
+    (width  + x_scale - x_offset - 1) // x_scale,
+    (height + y_scale - y_offset - 1) // y_scale,
+  ) for (x_scale, x_offset, y_scale, y_offset) in interlacing]
+  # make sure all pixels are accounted for
+  assert width * height == sum(w * h for (w, h) in pixel_sizes)
+
+  scanline_lengths = [
+    # filter types are present only for >0 width subimages
+    int(bool(w)) + (w * bits_per_pixel + 7) // 8
+    for (w, _) in pixel_sizes
+  ]
+  expected_idat_data_len = sum(scanline_length * h for (scanline_length, (_, h)) in zip(scanline_lengths, pixel_sizes))
+
+  # read all the chunks we care about
   idat_accumulator = []
   decompressor = zlib.decompressobj()
   palette = None
   while True:
     chunk = read_chunk(f)
     if chunk.type_code == b"IEND":
+      if len(f.read(1)) != 0:
+        raise SimplePngError("expected EOF")
       break
     elif chunk.type_code == b"PLTE":
-      if not(color_type & color_type_mask_INDEXED):
-        if verbose: print("WARNING: ignoring PLTE chunk. color_type {} does not require a palette".format(color_type))
-      else:
+      if color_type & color_type_mask_INDEXED:
+        if len(chunk.body) == 0:
+          raise SimplePngError("empty PLTE chunk")
+        if len(chunk.body) % 3 != 0:
+          raise SimplePngError("PLTE chunk length must be a multiple of 3")
         palette = [struct.unpack("!I", bytes(rgb + (0xff,)))[0] for rgb in zip(*[iter(chunk.body)]*3)]
+      else:
+        if verbose: print("WARNING: ignoring PLTE chunk. color_type {} does not require a palette".format(color_type))
     elif chunk.type_code == b"IDAT":
+      if (color_type & color_type_mask_INDEXED) and palette == None:
+        raise SimplePngError("missing PLTE chunk")
       idat_accumulator.append(decompressor.decompress(chunk.body))
     else:
       if verbose: print("WARNING: ignoring chunk: " + repr(chunk.type_code))
   idat_accumulator.append(decompressor.flush())
   idat_data = list(b"".join(idat_accumulator))
-  print(repr(bytes(idat_data)))
-
-  if bit_depth == 8:
-    def bits_at(index):
-      try: return idat_data[index]
-      except IndexError: raise SimplePngError("expected more IDAT data")
-    def consume_byte(index):
-      try: return (idat_data[index], index + 1)
-      except IndexError: raise SimplePngError("expected more IDAT data")
-    opaque = 0xff
-  elif bit_depth == 4:
-    def bits_at(index):
-      try: tmp = idat_data[index >> 1]
-      except IndexError: raise SimplePngError("expected more IDAT data")
-      shift = (1 - (index & 1)) << 2
-      return (tmp >> shift) & 0xf
-    def consume_byte(index):
-      index = (index + 1) & ~1
-      try: return (idat_data[index >> 1], index + 2)
-      except IndexError: raise SimplePngError("expected more IDAT data")
-    opaque = 0xf
-  elif bit_depth == 2:
-    def bits_at(index):
-      try: tmp = idat_data[index >> 2]
-      except IndexError: raise SimplePngError("expected more IDAT data")
-      shift = (3 - (index & 3)) << 1
-      return (tmp >> shift) & 0x3
-    def consume_byte(index):
-      index = (index + 3) & ~3
-      try: return (idat_data[index >> 2], index + 4)
-      except IndexError: raise SimplePngError("expected more IDAT data")
-    opaque = 0x3
-  elif bit_depth == 1:
-    def bits_at(index):
-      try: tmp = idat_data[index >> 3]
-      except IndexError: raise SimplePngError("expected more IDAT data")
-      shift = 7 - (index & 7)
-      return (tmp >> shift) & 0x1
-    def consume_byte(index):
-      index = (index + 7) & ~7
-      try: return (idat_data[index >> 3], index + 8)
-      except IndexError: raise SimplePngError("expected more IDAT data")
-    opaque = 0x1
-  else:
-    raise SimplePngError("unsupported bit depth: {}".format(bit_depth))
+  if len(idat_data) != expected_idat_data_len:
+    raise SimplePngError("unexpected decoded IDAT data length. expected: {}. got: {}".format(expected_idat_data_len, len(idat_data)))
 
   image = ImageBuffer(width, height)
   data = image.data
 
-  if interlaced == 0:
-    # no interlacing
-    passes = [(width, height, lambda x, y: y * width + x)]
-  else:
-    # Adam7 interlacing
-    passes = [
-      ((width + 7) // 8, (height + 7) // 8, lambda x, y: (y * 8    ) * width + x * 8    ),
-      ((width + 3) // 8, (height + 7) // 8, lambda x, y: (y * 8    ) * width + x * 8 + 4),
-      ((width + 3) // 4, (height + 3) // 8, lambda x, y: (y * 8 + 4) * width + x * 4    ),
-      ((width + 1) // 4, (height + 3) // 4, lambda x, y: (y * 4    ) * width + x * 4 + 2),
-      ((width + 1) // 2, (height + 1) // 4, lambda x, y: (y * 4 + 2) * width + x * 2    ),
-      ( width      // 2, (height + 1) // 2, lambda x, y: (y * 2    ) * width + x * 2 + 1),
-      ( width          ,  height      // 2, lambda x, y: (y * 2 + 1) * width + x        ),
-    ]
-    assert width * height == sum(w * h for w, h, _ in passes)
-
   if verbose: filter_type_histogram = collections.Counter()
   in_cursor = 0
-  for pass_width, pass_height, coord_transform in passes:
+  out_cursor = 0
+  for pass_index in range(len(interlacing)):
+    x_scale, x_offset, y_scale, y_offset = interlacing[pass_index]
+    pass_width, pass_height = pixel_sizes[pass_index]
+    scanline_length = scanline_lengths[pass_index]
+    scanline_content_length = scanline_length - 1
     if pass_width == 0: continue
 
-    # the filter reconstruct function operates on bytes, not pixels
-    if color_type == 0:
-      bytes_per_scanline = (pass_width * bit_depth) >> 3
-    elif color_type == color_type_mask_COLOR:
-      bytes_per_scanline = (pass_width * bit_depth * 3) >> 3
-    elif color_type == (color_type_mask_INDEXED | color_type_mask_COLOR):
-      bytes_per_scanline = pass_width
-    elif color_type == color_type_mask_ALPHA:
-      bytes_per_scanline = (pass_width * bit_depth * 2) >> 3
-    elif color_type == (color_type_mask_COLOR | color_type_mask_ALPHA):
-      bytes_per_scanline = (pass_width * bit_depth * 4) >> 3
-    else:
-      assert False
-
     for y in range(pass_height):
-      filter_type, in_cursor = consume_byte(in_cursor)
-      print(filter_type)
-      scanline_offset = in_cursor // bit_depth
-      # don't forget to skip the filter_type byte
-      scanline_offset_up = scanline_offset - bytes_per_scanline - 1
+      filter_type = idat_data[in_cursor]
+      in_cursor += 1
+      if verbose: filter_type_histogram.update([filter_type])
 
       # apply filter to the scanline
       if filter_type == 0: # none
         pass
       elif filter_type == 1: # sub
-        for i in range(1, bytes_per_scanline):
-          idat_data[scanline_offset + i] = (
-            idat_data[scanline_offset + i] +
-            idat_data[scanline_offset + i - 1]
+        for i in range(filter_left_delta, scanline_content_length):
+          idat_data[in_cursor + i] = (
+            idat_data[in_cursor + i] +
+            idat_data[in_cursor + i - filter_left_delta]
           ) & 0xff
       elif filter_type == 2: # up
         if y == 0:
           pass
         else:
-          for i in range(0, bytes_per_scanline):
-            idat_data[scanline_offset + i] = (
-              idat_data[scanline_offset + i] +
-              idat_data[scanline_offset_up + i]
+          for i in range(0, scanline_content_length):
+            idat_data[in_cursor + i] = (
+              idat_data[in_cursor + i] +
+              idat_data[in_cursor - scanline_length + i]
             ) & 0xff
       elif filter_type == 3: # average
         if y == 0:
-          for i in range(1, bytes_per_scanline):
-            idat_data[scanline_offset + i] = (
-              idat_data[scanline_offset + i] +
-              idat_data[scanline_offset + i - 1] >> 1
+          for i in range(filter_left_delta, scanline_content_length):
+            idat_data[in_cursor + i] = (
+              idat_data[in_cursor + i] +
+              idat_data[in_cursor + i - filter_left_delta] >> 1
             ) & 0xff
         else:
-          idat_data[scanline_offset] = (
-            idat_data[scanline_offset] +
-            idat_data[scanline_offset_up] >> 1
-          ) & 0xff
-          for i in range(1, bytes_per_scanline):
-            idat_data[scanline_offset + i] = (
-              idat_data[scanline_offset + i] + (
-                idat_data[scanline_offset + i - 1] +
-                idat_data[scanline_offset_up + i]
+          for i in range(0, filter_left_delta):
+            idat_data[in_cursor] = (
+              idat_data[in_cursor + i] +
+              idat_data[in_cursor - scanline_length + i] >> 1
+            ) & 0xff
+          for i in range(filter_left_delta, scanline_content_length):
+            idat_data[in_cursor + i] = (
+              idat_data[in_cursor + i] + (
+                idat_data[in_cursor + i - filter_left_delta] +
+                idat_data[in_cursor - scanline_length + i]
               ) >> 1
             ) & 0xff
       elif filter_type == 4: # paeth
         if y == 0:
-          for i in range(1, bytes_per_scanline):
-            idat_data[scanline_offset + i] = (
-              idat_data[scanline_offset + i] +
+          for i in range(filter_left_delta, scanline_content_length):
+            idat_data[in_cursor + i] = (
+              idat_data[in_cursor + i] +
               get_paeth_predictor(
-                idat_data[scanline_offset + i - 1],
+                idat_data[in_cursor + i - filter_left_delta],
                 0,
                 0,
               )
             ) & 0xff
         else:
-          idat_data[scanline_offset] = (
-            idat_data[scanline_offset] +
-            get_paeth_predictor(
-              0,
-              idat_data[scanline_offset_up + i],
-              0,
-            )
-          ) & 0xff
-          for i in range(1, bytes_per_scanline):
-            idat_data[scanline_offset + i] = (
-              idat_data[scanline_offset + i] +
+          for i in range(0, filter_left_delta):
+            idat_data[in_cursor + i] = (
+              idat_data[in_cursor + i] +
               get_paeth_predictor(
-                idat_data[scanline_offset + i - 1],
-                idat_data[scanline_offset_up + i],
-                idat_data[scanline_offset_up + i - 1],
+                0,
+                idat_data[in_cursor - scanline_length + i],
+                0,
+              )
+            ) & 0xff
+          for i in range(filter_left_delta, scanline_content_length):
+            idat_data[in_cursor + i] = (
+              idat_data[in_cursor + i] +
+              get_paeth_predictor(
+                idat_data[in_cursor + i - filter_left_delta],
+                idat_data[in_cursor - scanline_length + i],
+                idat_data[in_cursor - scanline_length + i - filter_left_delta],
               )
             ) & 0xff
       else:
         raise SimplePngError("unrecognized filter type: {}".format(filter_type))
-      if verbose: filter_type_histogram.update([filter_type])
 
+      # now we can read the pixel colors from the bytes
+      bit_index = 0
       for x in range(pass_width):
-        # get rbga from bits
-        if color_type & color_type_mask_INDEXED:
-          # palette
-          value = palette[bits_at(in_cursor)]
-          in_cursor += 1
+        value = read_color(idat_data, in_cursor, bit_index)
+        bit_index += bits_per_pixel
+        if palette != None:
+          try:
+            value = palette[value]
+          except IndexError:
+            raise SimplePngError("color index out of bounds: {} >= {}".format(value, len(palette)))
+        if interlaced == 0:
+          data[out_cursor] = value
+          out_cursor += 1
         else:
-          if color_type & color_type_mask_COLOR:
-            # rgb
-            r = bits_at(in_cursor+0)
-            g = bits_at(in_cursor+1)
-            b = bits_at(in_cursor+2)
-            in_cursor += 3
-          else:
-            # grayscale
-            r = g = b = bits_at(in_cursor)
-            in_cursor += 1
-          if color_type & color_type_mask_ALPHA:
-            a = bits_at(in_cursor)
-            in_cursor += 1
-          else:
-            a = opaque
-          value = (
-            (r << 24) |
-            (g << 16) |
-            (b << 8) |
-            (a << 0)
-          )
-        data[coord_transform(x, y)] = value
+          data[(y * y_scale + y_offset) * width + x * x_scale + x_offset] = value
+
+      in_cursor += scanline_content_length
+
   if verbose: print("filter types used: " + "   ".join("{}:{}".format(*x) for x in sorted(filter_type_histogram.items())))
 
-  # now that we've done all the filtering, we can scale the < 8 bit channels up to 8 bit channels
-  if not (color_type & color_type_mask_INDEXED) and bit_depth != 8:
-    if bit_depth == 4:
-      bit_scaler = 0x11
-    elif bit_depth == 2:
-      bit_scaler = 0x55
-    elif bit_depth == 1:
-      bit_scaler = 0xff
-    else:
-      assert False
-    for i in range(len(data)):
-      data[i] *= bit_scaler
-
   return image
+
+no_interlacing = [
+  (1, 0, 1, 0),
+]
+adam7_interlacing = [
+  # (x_scale, x_offset, y_scale, y_offset),
+  (8, 0, 8, 0),
+  (8, 4, 8, 0),
+  (4, 0, 8, 4),
+  (4, 2, 4, 0),
+  (2, 0, 4, 2),
+  (2, 1, 2, 0),
+  (1, 0, 2, 1),
+]
 
 def get_paeth_predictor(a, b, c):
   p = a + b - c
