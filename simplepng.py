@@ -205,6 +205,7 @@ def read_png(f, verbose=False):
           (idat_data[scanline_start + bit_index // 8] >> (7 - (bit_index & 7))) & 0x1
         )
       ) | 0xff
+    make_read_color_for_trns = make_simple_grayscale_make_read_color_for_trns(0xffffff00, read_color)
   elif (color_type, bit_depth) == (0, 2):
     bits_per_pixel = 2
     filter_left_delta = 1
@@ -214,6 +215,7 @@ def read_png(f, verbose=False):
           (idat_data[scanline_start + bit_index // 8] >> (6 - (bit_index & 6))) & 0x3
         )
       ) | 0xff
+    make_read_color_for_trns = make_simple_grayscale_make_read_color_for_trns(0x55555500, read_color)
   elif (color_type, bit_depth) == (0, 4):
     bits_per_pixel = 4
     filter_left_delta = 1
@@ -223,6 +225,7 @@ def read_png(f, verbose=False):
           (idat_data[scanline_start + bit_index // 8] >> (4 - (bit_index & 4))) & 0xf
         )
       ) | 0xff
+    make_read_color_for_trns = make_simple_grayscale_make_read_color_for_trns(0x11111100, read_color)
   elif (color_type, bit_depth) == (0, 8):
     bits_per_pixel = 8
     filter_left_delta = 1
@@ -230,6 +233,7 @@ def read_png(f, verbose=False):
       return (
         0x01010100 * idat_data[scanline_start + bit_index // 8]
       ) | 0xff
+    make_read_color_for_trns = make_simple_grayscale_make_read_color_for_trns(0x01010100, read_color)
   elif (color_type, bit_depth) == (0, 16):
     bits_per_pixel = 16
     filter_left_delta = 2
@@ -237,6 +241,14 @@ def read_png(f, verbose=False):
       return (
         0x01010100 * idat_data[scanline_start + bit_index // 8]
       ) | 0xff
+    original_read_color = read_color
+    def make_read_color_for_trns(trns_body):
+      magic_list_slice = list(trns_body)
+      def new_read_color(idat_data, scanline_start, bit_index):
+        if idat_data[scanline_start + bit_index // 8 : scanline_start + bit_index // 8 + 2] == magic_list_slice:
+          return 0
+        return original_read_color(idat_data, scanline_start, bit_index)
+      return new_read_color
   elif (color_type, bit_depth) == (2, 8):
     bits_per_pixel = 24
     filter_left_delta = 3
@@ -248,6 +260,20 @@ def read_png(f, verbose=False):
       ) | (
         idat_data[scanline_start + bit_index // 8 + 2] << 8
       ) | 0xff
+    original_read_color = read_color
+    def make_read_color_for_trns(trns_body):
+      magic_value = (
+        trns_body[1] << 24
+      ) | (
+        trns_body[3] << 16
+      ) | (
+        trns_body[5] << 8
+      ) | 0xff
+      def new_read_color(*args):
+        nominal_value = original_read_color(*args)
+        if nominal_value == magic_value: return 0
+        return nominal_value
+      return new_read_color
   elif (color_type, bit_depth) == (2, 16):
     bits_per_pixel = 48
     filter_left_delta = 6
@@ -259,6 +285,14 @@ def read_png(f, verbose=False):
       ) | (
         idat_data[scanline_start + bit_index // 8 + 4] << 8
       ) | 0xff
+    original_read_color = read_color
+    def make_read_color_for_trns(trns_body):
+      magic_list_slice = list(trns_body)
+      def new_read_color(idat_data, scanline_start, bit_index):
+        if idat_data[scanline_start + bit_index // 8 : scanline_start + bit_index // 8 + 6] == magic_list_slice:
+          return 0
+        return original_read_color(idat_data, scanline_start, bit_index)
+      return new_read_color
   elif (color_type, bit_depth) == (3, 1):
     bits_per_pixel = 1
     filter_left_delta = 1
@@ -359,6 +393,8 @@ def read_png(f, verbose=False):
       break
     elif chunk.type_code == b"PLTE":
       if color_type & color_type_mask_INDEXED:
+        if palette != None:
+          raise SimplePngError("multiple PLTE chunks")
         if len(chunk.body) == 0:
           raise SimplePngError("empty PLTE chunk")
         if len(chunk.body) % 3 != 0:
@@ -366,6 +402,24 @@ def read_png(f, verbose=False):
         palette = [struct.unpack("!I", bytes(rgb + (0xff,)))[0] for rgb in zip(*[iter(chunk.body)]*3)]
       else:
         if verbose: print("WARNING: ignoring PLTE chunk. color_type {} does not require a palette".format(color_type))
+    elif chunk.type_code == b"tRNS":
+      if color_type & color_type_mask_ALPHA:
+        raise SimplePngError("tRNS chunk not allowed for color type: {}".format(color_type))
+      if color_type & color_type_mask_INDEXED:
+        if palette == None:
+          raise SimplePngError("tRNS must come after PLTE")
+        if len(chunk.body) > len(palette):
+          raise SimplePngError("too many tRNS values. {} > {}".format(len(chunk.body), len(palette)))
+        for i in range(len(chunk.body)):
+          palette[i] = (palette[i] & 0xffffff00) | chunk.body[i]
+      else:
+        if color_type & color_type_mask_COLOR:
+          expected_trns_length = 6
+        else:
+          expected_trns_length = 2
+        if len(chunk.body) != expected_trns_length:
+          raise SimplePngError("expected tRNS length {}. got: {}".format(expected_trns_length, len(chunk.body)))
+        read_color = make_read_color_for_trns(chunk.body)
     elif chunk.type_code == b"IDAT":
       if (color_type & color_type_mask_INDEXED) and palette == None:
         raise SimplePngError("missing PLTE chunk")
@@ -380,6 +434,7 @@ def read_png(f, verbose=False):
   image = ImageBuffer(width, height)
   data = image.data
 
+  # decode the pixels
   if verbose: filter_type_histogram = collections.Counter()
   in_cursor = 0
   out_cursor = 0
@@ -510,6 +565,18 @@ def get_paeth_predictor(a, b, c):
   if pa <= pb and pa <= pc: return a
   if pb <= pc: return b
   return c
+
+def make_simple_grayscale_make_read_color_for_trns(value_multiplier, original_read_color):
+  def make_read_color_for_trns(trns_body):
+    magic_value = (
+      trns_body[1] * value_multiplier
+    ) | 0xff
+    def read_color(*args):
+      nominal_value = original_read_color(*args)
+      if nominal_value == magic_value: return 0
+      return nominal_value
+    return read_color
+  return make_read_color_for_trns
 
 if __name__ == "__main__":
   print("reading base...")

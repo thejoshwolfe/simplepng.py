@@ -44,8 +44,7 @@ In memory, this library stores images in RGBA format with 8 bits per channel (32
 When reading 16-bit channels, this library downsamples them to 8-bit channels
 by simply ignoring the less signficiant byte.
 
-When reading images, only chunk types IHDR, IPLT, IDAT, and IEND are recognized; all others are ignored.
-TODO: Recognize the tRNS ancillary chunk for describing the alpha channel.
+When reading images, only chunk types IHDR, IPLT, tRNS, IDAT, and IEND are recognized; all others are ignored.
 
 When encoding png images, this library makes very simple and naive (i.e. suboptimal) encoding decisions:
 
